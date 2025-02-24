@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>Anime Doom</title>
+
+    <link rel="stylesheet" href="main.css" />
+  </head>
+  <body>
+    <div id="startScreen">
+      <h1>ANIME DOOM</h1>
+      <button id="startButton">START GAME</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="hud">
+      <div id="ammo">AMMO: 30/30</div>
+      <div id="health">HEALTH: 100</div>
+      <div id="score">SCORE: 0</div>
+    </div>
+
+    <div id="crosshair">+</div>
+
+    <div id="gameOver">
+      GAME OVER
+      <button id="restartButton">RESTART</button>
+    </div>
+
+    <div class="flash" id="damageFlash"></div>
+
+    <!-- Load Three.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/PointerLockControls.js"></script>
+
+    <script src="main.js"></script>
+  </body>
+</html>
