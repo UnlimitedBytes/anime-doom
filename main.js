@@ -578,9 +578,17 @@ function createAmmoPickups() {
     [-10, 10],
   ];
 
+  // Load ammo texture with loading manager
+  const textureLoader = new THREE.TextureLoader(loadingManager);
+  const ammoTexture = textureLoader.load('ammo.webp');
+
   // Create ammo pickup geometry and material
   const ammoGeometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
-  const ammoMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+  const ammoMaterial = new THREE.MeshBasicMaterial({ 
+    map: ammoTexture,
+    // Keep a slight yellow tint for better visibility
+    color: 0xffffaa
+  });
 
   // Create ammo pickups
   for (let i = 0; i < ammoPositions.length; i++) {
