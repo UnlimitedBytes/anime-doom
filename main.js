@@ -161,18 +161,18 @@ function synthDamage() {
   const oscillator = ctx.createOscillator();
   const gainNode = ctx.createGain();
 
-  oscillator.type = "square";
+  oscillator.type = "sine";
   oscillator.frequency.setValueAtTime(100, ctx.currentTime);
-  oscillator.frequency.exponentialRampToValueAtTime(50, ctx.currentTime + 0.3);
+  oscillator.frequency.exponentialRampToValueAtTime(500, ctx.currentTime + 0.1);
 
   gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
-  gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+  gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
 
   oscillator.connect(gainNode);
-  gainNode.connect(ctx.destination);
+  gainNode.connect(analyser);
 
   oscillator.start();
-  oscillator.stop(ctx.currentTime + 0.3);
+  oscillator.stop(ctx.currentTime + 0.1);
 }
 
 function createBackgroundMusic() {
@@ -552,6 +552,13 @@ function createEnemies() {
     enemy.userData.lastAttack = 0;
     enemy.userData.pathfindCooldown = 0; // Add pathfinding cooldown
     enemy.userData.currentPath = null; // Current pathfinding direction
+    
+    // Add shooting properties
+    enemy.userData.ammo = 5; // Give each enemy 5 ammo
+    enemy.userData.lastShot = 0; // Last time enemy shot
+    enemy.userData.shootCooldown = 1500; // 1.5 seconds between shots
+    enemy.userData.playerVisibleTime = 0; // How long the player has been visible
+    enemy.userData.canSeePlayer = false; // Whether the enemy can see the player
 
     scene.add(enemy);
     enemies.push(enemy);
@@ -1150,6 +1157,115 @@ function update(time) {
     // Keep enemy on ground
     enemy.position.y = 0.9;
 
+    // Check if enemy can see player (line of sight)
+    const rayStart = enemy.position.clone();
+    rayStart.y = 1.0; // Eye level
+    const rayEnd = camera.position.clone();
+    const rayDirection = new THREE.Vector3().subVectors(rayEnd, rayStart).normalize();
+    const raycaster = new THREE.Raycaster(rayStart, rayDirection);
+    const intersects = raycaster.intersectObjects(walls);
+    
+    const enemyToPlayerDistance = enemy.position.distanceTo(camera.position);
+    const maxShootingDistance = 15; // Maximum distance for shooting
+    
+    // Enemy can see player if there are no walls between them or the wall is further than the player
+    const canSeePlayer = (intersects.length === 0 || 
+      (intersects.length > 0 && intersects[0].distance > enemyToPlayerDistance)) &&
+      enemyToPlayerDistance < maxShootingDistance;
+
+    // Initialize shooting properties if they don't exist
+    if (enemy.userData.ammo === undefined) {
+      enemy.userData.ammo = 5;
+      enemy.userData.lastShot = 0;
+      enemy.userData.shootCooldown = 1500;
+      enemy.userData.playerVisibleTime = 0;
+      enemy.userData.canSeePlayer = false;
+    }
+    
+    // Update player visibility tracking
+    if (canSeePlayer) {
+      if (!enemy.userData.canSeePlayer) {
+        // Player just became visible
+        enemy.userData.canSeePlayer = true;
+        enemy.userData.playerVisibleTime = 0;
+      } else {
+        // Player remains visible, increment time
+        enemy.userData.playerVisibleTime += delta;
+        
+        // If player has been visible for more than 1 second and enemy has ammo, shoot
+        if (enemy.userData.playerVisibleTime > 1.0 && enemy.userData.ammo > 0) {
+          const now = time;
+          if (now - enemy.userData.lastShot > enemy.userData.shootCooldown) {
+            // Shoot at player
+            enemy.userData.lastShot = now;
+            enemy.userData.ammo--;
+            
+            // Create muzzle flash for enemy
+            const flashGeometry = new THREE.SphereGeometry(0.2, 8, 8);
+            const flashMaterial = new THREE.MeshBasicMaterial({
+              color: 0xffff00,
+              transparent: true,
+              opacity: 0.8
+            });
+            const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+            
+            // Position flash in front of enemy
+            const flashPosition = enemy.position.clone();
+            flashPosition.y = 1.2; // Chest height
+            const flashOffset = rayDirection.clone().multiplyScalar(0.6);
+            flashPosition.add(flashOffset);
+            flash.position.copy(flashPosition);
+            
+            scene.add(flash);
+            
+            // Remove flash after 100ms
+            setTimeout(() => {
+              scene.remove(flash);
+            }, 100);
+            
+            // Create bullet trail from enemy to player
+            const bulletEnd = camera.position.clone();
+            // Add some randomness to aim (accuracy decreases with distance)
+            const accuracy = 0.1 + (distanceToPlayer * 0.02);
+            bulletEnd.x += (Math.random() - 0.5) * accuracy;
+            bulletEnd.y += (Math.random() - 0.5) * accuracy;
+            bulletEnd.z += (Math.random() - 0.5) * accuracy;
+            
+            createBulletTrail(flashPosition, bulletEnd);
+            
+            // Check if bullet hits player (simplified hit detection)
+            const hitChance = 0.7 - (distanceToPlayer * 0.03); // Closer = more accurate
+            if (Math.random() < hitChance) {
+              // Damage player
+              health -= 5; // Enemy bullets do less damage than player's
+              document.getElementById("health").textContent = `HEALTH: ${health}`;
+              
+              // Play damage sound
+              synthDamage();
+              
+              // Show damage flash
+              const damageFlash = document.getElementById("damageFlash");
+              damageFlash.style.opacity = "1";
+              setTimeout(() => {
+                damageFlash.style.opacity = "0";
+              }, 100);
+              
+              // Check if player is dead
+              if (health <= 0) {
+                gameOver = true;
+                controls.unlock();
+                document.getElementById("gameOver").style.display = "block";
+              }
+            }
+          }
+        }
+      }
+    } else {
+      // Player not visible, reset tracking
+      enemy.userData.canSeePlayer = false;
+      enemy.userData.playerVisibleTime = 0;
+    }
+
     // Check if enemy is close to player
     const distanceToPlayer = enemy.position.distanceTo(camera.position);
 
@@ -1330,30 +1446,24 @@ document.getElementById("restartButton").addEventListener("click", function () {
 
 // Create bullet trail effect
 function createBulletTrail(start, end) {
-  const direction = new THREE.Vector3().subVectors(end, start).normalize();
-  const length = start.distanceTo(end);
-
-  const trailGeometry = new THREE.CylinderGeometry(0.01, 0.01, length, 8);
-  trailGeometry.applyMatrix4(new THREE.Matrix4().makeRotationX(Math.PI / 2));
-  trailGeometry.applyMatrix4(
-    new THREE.Matrix4().makeTranslation(0, 0, length / 2)
-  );
-
-  const trailMaterial = new THREE.MeshBasicMaterial({
+  // Create a line for the bullet trail
+  const material = new THREE.LineBasicMaterial({
     color: 0xffff00,
     transparent: true,
-    opacity: 0.5,
+    opacity: 0.8
   });
-  const trail = new THREE.Mesh(trailGeometry, trailMaterial);
-
-  trail.position.copy(start);
-  trail.lookAt(end);
-
-  scene.add(trail);
-
-  // Remove trail after 100ms
+  
+  const points = [];
+  points.push(start);
+  points.push(end);
+  
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const line = new THREE.Line(geometry, material);
+  scene.add(line);
+  
+  // Remove the line after a short time
   setTimeout(() => {
-    scene.remove(trail);
+    scene.remove(line);
   }, 100);
 }
 
