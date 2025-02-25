@@ -616,7 +616,7 @@ function onWindowResize() {
 
 // Handle key down events
 function onKeyDown(event) {
-  if (gameOver) return;
+  if (gameOver || isPaused) return; // Add isPaused check here
 
   switch (event.code) {
     case "ArrowUp":
@@ -646,6 +646,8 @@ function onKeyDown(event) {
 
 // Handle key up events
 function onKeyUp(event) {
+  if (gameOver || isPaused) return; // Add isPaused check here
+
   switch (event.code) {
     case "ArrowUp":
     case "KeyW":
@@ -687,101 +689,19 @@ function onClick(event) {
     return;
   }
 
+  if (isPaused) {
+    // Resume game if paused
+    controls.lock();
+    return;
+  }
+
   if (!controls.isLocked) {
     controls.lock();
     return;
   }
 
   // Shoot
-  if (ammo > 0) {
-    // Check cooldown
-    const now = performance.now();
-    if (now - bulletTime < 250) {
-      // 250ms cooldown
-      return; // This return should be inside a function
-    }
-    bulletTime = now;
-
-    ammo--;
-    document.getElementById("ammo").textContent = `AMMO: ${ammo}/${maxAmmo}`;
-
-    // Play shoot sound
-    synthShoot();
-
-    // Create muzzle flash
-    const flash = document.createElement("div");
-    flash.style.position = "absolute";
-    flash.style.top = "50%";
-    flash.style.left = "50%";
-    flash.style.width = "100px";
-    flash.style.height = "100px";
-    flash.style.backgroundColor = "rgba(255, 255, 0, 0.5)";
-    flash.style.borderRadius = "50%";
-    flash.style.transform = "translate(-50%, -50%)";
-    flash.style.pointerEvents = "none";
-    flash.style.zIndex = "100";
-    document.body.appendChild(flash);
-
-    // Remove muzzle flash after 100ms
-    setTimeout(() => {
-      document.body.removeChild(flash);
-    }, 100);
-
-    // Raycast to check for hits
-    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-
-    const intersects = raycaster.intersectObjects(enemies);
-
-    if (intersects.length > 0) {
-      const enemy = intersects[0].object;
-
-      // Damage enemy
-      enemy.userData.health -= 20;
-
-      // Update health bar
-      const healthPercent = enemy.userData.health / enemy.userData.maxHealth;
-      enemy.userData.healthBar.scale.x = Math.max(0.01, healthPercent);
-
-      // Change health bar color based on health
-      if (healthPercent > 0.6) {
-        enemy.userData.healthBar.material.color.setHex(0x00ff00);
-      } else if (healthPercent > 0.3) {
-        enemy.userData.healthBar.material.color.setHex(0xffff00);
-      } else {
-        enemy.userData.healthBar.material.color.setHex(0xff0000);
-      }
-
-      // Play hit sound
-      synthHit();
-
-      // Check if enemy is dead
-      if (enemy.userData.health <= 0) {
-        scene.remove(enemy);
-        enemies.splice(enemies.indexOf(enemy), 1);
-        score += 100;
-        enemiesKilled++; // Increment enemies killed counter
-        document.getElementById("score").textContent = `SCORE: ${score}`;
-        document.getElementById("enemiesKilled").textContent = `ENEMIES KILLED: ${enemiesKilled}`;
-      }
-    }
-  } else {
-    // Click sound for empty gun
-    const ctx = audioContext || createAudioContext();
-    const oscillator = ctx.createOscillator();
-    const gainNode = ctx.createGain();
-
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(200, ctx.currentTime);
-
-    gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
-
-    oscillator.connect(gainNode);
-    gainNode.connect(ctx.destination);
-
-    oscillator.start();
-    oscillator.stop(ctx.currentTime + 0.1);
-  }
+  handlePlayerShooting();
 }
 
 // Update game state
@@ -1407,6 +1327,12 @@ document.addEventListener("pointerlockchange", function () {
   if (document.pointerLockElement !== document.body) {
     // Game is paused - controls are unlocked
     isPaused = true;
+    
+    // Reset movement flags when paused
+    moveForward = false;
+    moveBackward = false;
+    moveLeft = false;
+    moveRight = false;
     
     // Create pause screen if it doesn't exist
     if (!document.getElementById("pauseScreen")) {
