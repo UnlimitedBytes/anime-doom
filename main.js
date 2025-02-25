@@ -5,6 +5,7 @@ let score = 0;
 let health = 100;
 let ammo = 30;
 let maxAmmo = 30;
+let isPaused = false;
 
 // Three.js variables
 let scene, camera, renderer;
@@ -422,7 +423,7 @@ function onKeyDown(event) {
       break;
     case "Space":
       if (canJump) {
-        velocity.y += 350;
+        velocity.y += 150; // Reduced from 250 to keep player within bounds
         canJump = false;
       }
       break;
@@ -564,33 +565,101 @@ function onClick(event) {
 
 // Update game state
 function update(time) {
-  if (!gameStarted || gameOver) return;
+  if (!gameStarted || gameOver || isPaused) return;
 
   const delta = (time - prevTime) / 1000;
 
-  // Update velocity based on movement
-  velocity.x -= velocity.x * 10.0 * delta;
-  velocity.z -= velocity.z * 10.0 * delta;
-  velocity.y -= 9.8 * 100.0 * delta; // Gravity
+  // Store old position for collision response
+  const oldPosition = camera.position.clone();
 
+  // Fix movement direction calculation
   direction.z = Number(moveForward) - Number(moveBackward);
   direction.x = Number(moveRight) - Number(moveLeft);
+
   direction.normalize();
 
-  if (moveForward || moveBackward) velocity.z -= direction.z * 400.0 * delta;
-  if (moveLeft || moveRight) velocity.x -= direction.x * 400.0 * delta;
+  // Apply movement if controls are locked
+  if (controls.isLocked) {
+    // Set a fixed movement speed
+    const moveSpeed = 5;
+    
+    // FIX: Remove the negative signs that were inverting the controls
+    if (moveForward || moveBackward) velocity.z = direction.z * moveSpeed;
+    if (moveLeft || moveRight) velocity.x = direction.x * moveSpeed;
 
-  // Move player
-  controls.moveRight(-velocity.x * delta);
-  controls.moveForward(-velocity.z * delta);
+    // Apply velocity
+    controls.moveRight(velocity.x * delta);
+    controls.moveForward(velocity.z * delta);
 
-  // Check if player is on ground
-  if (camera.position.y < 1.6) {
+    // Reset horizontal velocity
+    velocity.x = 0;
+    velocity.z = 0;
+  }
+
+  // Handle vertical movement (gravity and jumping) with limits
+  velocity.y -= 9.8 * delta; // Apply gravity
+  velocity.y = Math.max(velocity.y, -10); // Terminal velocity
+
+  if (controls.isLocked) {
+    const newY = camera.position.y + velocity.y * delta;
+    // Limit jump height to 3.0 units (reduced from 4.6)
+    camera.position.y = Math.max(1.6, Math.min(newY, 3.0)); 
+    
+    // If we hit the ceiling, stop upward velocity
+    if (camera.position.y >= 3.0 && velocity.y > 0) {
+      velocity.y = 0;
+    }
+  }
+
+  // Ground check
+  if (camera.position.y <= 1.6) {
     velocity.y = 0;
     camera.position.y = 1.6;
     canJump = true;
   }
 
+  // Improved wall collision detection
+  const playerRadius = 0.5;
+  let collisionResponse = new THREE.Vector3();
+  let hasCollision = false;
+
+  for (const wall of walls) {
+    const wallBox = new THREE.Box3().setFromObject(wall);
+    const playerPos = camera.position.clone();
+    
+    // Check collision at current height and slightly above/below
+    const positions = [
+      playerPos.clone().setY(1.0),
+      playerPos.clone().setY(1.6),
+      playerPos.clone().setY(2.2)
+    ];
+
+    for (const pos of positions) {
+      const result = isColliding(pos, playerRadius, wallBox);
+      if (result.collides) {
+        // Calculate collision response
+        const pushBack = result.normal.multiplyScalar(result.penetration);
+        collisionResponse.add(pushBack);
+        hasCollision = true;
+      }
+    }
+  }
+
+  // Apply collision response
+  if (hasCollision) {
+    // Apply the average collision response
+    camera.position.add(collisionResponse);
+    
+    // Alternative: revert to old position if you prefer
+    // camera.position.copy(oldPosition);
+  }
+
+  // Add boundary check to keep player in map
+  const mapBounds = 14; // Half the size of our 15x15 maze
+  camera.position.x = Math.max(-mapBounds, Math.min(mapBounds, camera.position.x));
+  camera.position.z = Math.max(-mapBounds, Math.min(mapBounds, camera.position.z));
+
+  // Rest of the update function (enemies, pickups, etc.)
   // Update enemies
   for (let i = 0; i < enemies.length; i++) {
     const enemy = enemies[i];
@@ -602,9 +671,68 @@ function update(time) {
     const directionToPlayer = new THREE.Vector3();
     directionToPlayer.subVectors(camera.position, enemy.position).normalize();
 
+    // Store old position for collision detection
+    const oldPosition = enemy.position.clone();
+
     // Move enemy towards player
-    enemy.position.x += directionToPlayer.x * enemy.userData.speed;
-    enemy.position.z += directionToPlayer.z * enemy.userData.speed;
+    const newPosition = enemy.position.clone();
+    newPosition.x += directionToPlayer.x * enemy.userData.speed;
+    newPosition.z += directionToPlayer.z * enemy.userData.speed;
+
+    // Check for wall collisions before applying movement
+    let canMove = true;
+    const enemyRadius = 0.4; // Slightly smaller than player radius
+
+    for (const wall of walls) {
+      const wallBox = new THREE.Box3().setFromObject(wall);
+      
+      // Check collision at enemy's height
+      const result = isColliding(newPosition, enemyRadius, wallBox);
+      if (result.collides) {
+        canMove = false;
+        break;
+      }
+    }
+
+    // Only move if no collision detected
+    if (canMove) {
+      enemy.position.copy(newPosition);
+    } else {
+      // Try to move along walls (basic pathfinding)
+      // Try X movement only
+      const tryX = oldPosition.clone();
+      tryX.x += directionToPlayer.x * enemy.userData.speed;
+      
+      let canMoveX = true;
+      for (const wall of walls) {
+        const wallBox = new THREE.Box3().setFromObject(wall);
+        if (isColliding(tryX, enemyRadius, wallBox).collides) {
+          canMoveX = false;
+          break;
+        }
+      }
+      
+      if (canMoveX) {
+        enemy.position.copy(tryX);
+      } else {
+        // Try Z movement only
+        const tryZ = oldPosition.clone();
+        tryZ.z += directionToPlayer.z * enemy.userData.speed;
+        
+        let canMoveZ = true;
+        for (const wall of walls) {
+          const wallBox = new THREE.Box3().setFromObject(wall);
+          if (isColliding(tryZ, enemyRadius, wallBox).collides) {
+            canMoveZ = false;
+            break;
+          }
+        }
+        
+        if (canMoveZ) {
+          enemy.position.copy(tryZ);
+        }
+      }
+    }
 
     // Keep enemy on ground
     enemy.position.y = 0.9;
@@ -696,6 +824,28 @@ function update(time) {
   prevTime = time;
 }
 
+// Improved collision detection helper function
+function isColliding(playerPos, radius, wallBox) {
+  // Calculate closest point on wall box to player using clamp
+  const closest = new THREE.Vector3();
+  closest.x = Math.max(wallBox.min.x, Math.min(playerPos.x, wallBox.max.x));
+  closest.y = Math.max(wallBox.min.y, Math.min(playerPos.y, wallBox.max.y));
+  closest.z = Math.max(wallBox.min.z, Math.min(playerPos.z, wallBox.max.z));
+  
+  // Add a small buffer to the collision radius for better wall avoidance
+  const collisionRadius = radius + 0.1;
+  
+  // Calculate squared distance between player and closest point
+  const distanceSquared = playerPos.distanceToSquared(closest);
+  
+  // If squared distance is less than radius squared, there's a collision
+  return {
+    collides: distanceSquared < collisionRadius * collisionRadius,
+    penetration: collisionRadius - Math.sqrt(distanceSquared),
+    normal: playerPos.clone().sub(closest).normalize()
+  };
+}
+
 // Animation loop
 function animate() {
   requestAnimationFrame(animate);
@@ -725,12 +875,9 @@ document.getElementById("gameCanvas").addEventListener("click", function () {
 document.addEventListener("pointerlockchange", function () {
   if (!controls) return;
 
-  if (
-    document.pointerLockElement !== document.body &&
-    gameStarted &&
-    !gameOver
-  ) {
+  if (document.pointerLockElement !== document.body && gameStarted && !gameOver) {
     // Game is paused
+    isPaused = true;
     const pauseScreen = document.createElement("div");
     pauseScreen.id = "pauseScreen";
     pauseScreen.style.position = "absolute";
@@ -749,6 +896,7 @@ document.addEventListener("pointerlockchange", function () {
     document.body.appendChild(pauseScreen);
   } else {
     // Game is resumed
+    isPaused = false;
     const pauseScreen = document.getElementById("pauseScreen");
     if (pauseScreen) {
       document.body.removeChild(pauseScreen);
