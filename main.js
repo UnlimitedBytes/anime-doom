@@ -233,6 +233,7 @@ let loadingManager;
 let loadingScreen;
 let loadingProgress = 0;
 let assetsLoaded = false;
+const bullets = [];
 
 // Create loading screen
 function createLoadingScreen() {
@@ -687,7 +688,10 @@ function onClick(event) {
   if (ammo > 0) {
     // Check cooldown
     const now = performance.now();
-    if (now - bulletTime < 250) return; // 250ms cooldown
+    if (now - bulletTime < 250) {
+      // 250ms cooldown
+      return; // This return should be inside a function
+    }
     bulletTime = now;
 
     ammo--;
@@ -1223,40 +1227,19 @@ function update(time) {
               scene.remove(flash);
             }, 100);
             
-            // Create bullet trail from enemy to player
-            const bulletEnd = camera.position.clone();
+            // Create bullet target position (player position with some inaccuracy)
+            const bulletTarget = camera.position.clone();
             // Add some randomness to aim (accuracy decreases with distance)
-            const accuracy = 0.1 + (distanceToPlayer * 0.02);
-            bulletEnd.x += (Math.random() - 0.5) * accuracy;
-            bulletEnd.y += (Math.random() - 0.5) * accuracy;
-            bulletEnd.z += (Math.random() - 0.5) * accuracy;
+            const accuracy = 0.1 + (enemyToPlayerDistance * 0.02);
+            bulletTarget.x += (Math.random() - 0.5) * accuracy;
+            bulletTarget.y += (Math.random() - 0.5) * accuracy;
+            bulletTarget.z += (Math.random() - 0.5) * accuracy;
             
-            createBulletTrail(flashPosition, bulletEnd);
+            // Create actual bullet projectile
+            createEnemyBullet(flashPosition, bulletTarget, enemy);
             
-            // Check if bullet hits player (simplified hit detection)
-            const hitChance = 0.7 - (distanceToPlayer * 0.03); // Closer = more accurate
-            if (Math.random() < hitChance) {
-              // Damage player
-              health -= 5; // Enemy bullets do less damage than player's
-              document.getElementById("health").textContent = `HEALTH: ${health}`;
-              
-              // Play damage sound
-              synthDamage();
-              
-              // Show damage flash
-              const damageFlash = document.getElementById("damageFlash");
-              damageFlash.style.opacity = "1";
-              setTimeout(() => {
-                damageFlash.style.opacity = "0";
-              }, 100);
-              
-              // Check if player is dead
-              if (health <= 0) {
-                gameOver = true;
-                controls.unlock();
-                document.getElementById("gameOver").style.display = "block";
-              }
-            }
+            // Create bullet trail for visual effect
+            createBulletTrail(flashPosition, bulletTarget);
           }
         }
       }
@@ -1349,6 +1332,9 @@ function update(time) {
     // Spawn more enemies
     createEnemies();
   }
+
+  // Update bullets
+  updateBullets(delta);
 
   prevTime = time;
 }
@@ -1519,4 +1505,232 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('startScreen').style.display = 'none';
   // Initialize the game on page load
   init();
+});
+
+// Add this function to create enemy bullets
+function createEnemyBullet(startPosition, targetPosition, enemy) {
+  // Create bullet geometry and material
+  const bulletGeometry = new THREE.SphereGeometry(0.1, 8, 8);
+  const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+  const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
+  
+  // Set initial position
+  bullet.position.copy(startPosition);
+  
+  // Calculate direction vector
+  const direction = new THREE.Vector3().subVectors(targetPosition, startPosition).normalize();
+  
+  // Add properties to the bullet
+  bullet.userData = {
+    direction: direction,
+    speed: 15, // Units per second
+    damage: 5,
+    lifetime: 0,
+    maxLifetime: 3, // Seconds before bullet is removed
+    source: 'enemy',
+    sourceEnemy: enemy // Reference to the enemy that fired
+  };
+  
+  // Add bullet to scene and bullets array
+  scene.add(bullet);
+  bullets.push(bullet);
+  
+  return bullet;
+}
+
+// Add this function to update bullets
+function updateBullets(delta) {
+  for (let i = 0; i < bullets.length; i++) {
+    const bullet = bullets[i];
+    
+    // Update bullet position
+    const moveDistance = bullet.userData.speed * delta;
+    bullet.position.addScaledVector(bullet.userData.direction, moveDistance);
+    
+    // Update lifetime
+    bullet.userData.lifetime += delta;
+    
+    // Check if bullet has exceeded its lifetime
+    if (bullet.userData.lifetime > bullet.userData.maxLifetime) {
+      scene.remove(bullet);
+      bullets.splice(i, 1);
+      i--;
+      continue;
+    }
+    
+    // Check for collisions with walls
+    let hitWall = false;
+    for (const wall of walls) {
+      const wallBox = new THREE.Box3().setFromObject(wall);
+      if (isColliding(bullet.position, 0.1, wallBox).collides) {
+        hitWall = true;
+        break;
+      }
+    }
+    
+    if (hitWall) {
+      scene.remove(bullet);
+      bullets.splice(i, 1);
+      i--;
+      continue;
+    }
+    
+    // Check for collision with player (only for enemy bullets)
+    if (bullet.userData.source === 'enemy') {
+      const distanceToPlayer = bullet.position.distanceTo(camera.position);
+      if (distanceToPlayer < 0.5) { // Player hit radius
+        // Damage player
+        health -= bullet.userData.damage;
+        document.getElementById("health").textContent = `HEALTH: ${health}`;
+        
+        // Play damage sound
+        synthDamage();
+        
+        // Show damage flash
+        const damageFlash = document.getElementById("damageFlash");
+        damageFlash.style.opacity = "1";
+        setTimeout(() => {
+          damageFlash.style.opacity = "0";
+        }, 100);
+        
+        // Check if player is dead
+        if (health <= 0) {
+          gameOver = true;
+          controls.unlock();
+          document.getElementById("gameOver").style.display = "block";
+        }
+        
+        // Remove bullet
+        scene.remove(bullet);
+        bullets.splice(i, 1);
+        i--;
+        continue;
+      }
+    }
+    
+    // Check for collision with enemies (only for player bullets)
+    if (bullet.userData.source === 'player') {
+      for (let j = 0; j < enemies.length; j++) {
+        const enemy = enemies[j];
+        const distanceToEnemy = bullet.position.distanceTo(enemy.position);
+        
+        if (distanceToEnemy < 0.5) { // Enemy hit radius
+          // Damage enemy
+          enemy.userData.health -= bullet.userData.damage;
+          
+          // Update health bar
+          const healthPercent = enemy.userData.health / enemy.userData.maxHealth;
+          enemy.userData.healthBar.scale.x = Math.max(0.01, healthPercent);
+          
+          // Change health bar color based on health
+          if (healthPercent > 0.6) {
+            enemy.userData.healthBar.material.color.setHex(0x00ff00);
+          } else if (healthPercent > 0.3) {
+            enemy.userData.healthBar.material.color.setHex(0xffff00);
+          } else {
+            enemy.userData.healthBar.material.color.setHex(0xff0000);
+          }
+          
+          // Check if enemy is dead
+          if (enemy.userData.health <= 0) {
+            // Remove enemy
+            scene.remove(enemy);
+            enemies.splice(j, 1);
+            j--;
+            
+            // Increment score
+            score += 100;
+            document.getElementById("score").textContent = `SCORE: ${score}`;
+          }
+          
+          // Remove bullet
+          scene.remove(bullet);
+          bullets.splice(i, 1);
+          i--;
+          break;
+        }
+      }
+    }
+  }
+}
+
+// Add this function to handle player shooting
+function handlePlayerShooting() {
+  if (ammo > 0) {
+    // Check cooldown
+    const now = performance.now();
+    if (now - bulletTime < 250) {
+      return; // This return is now inside a function
+    }
+    bulletTime = now;
+
+    ammo--;
+    document.getElementById("ammo").textContent = `AMMO: ${ammo}/${maxAmmo}`;
+
+    // Play shoot sound
+    synthShoot();
+
+    // Create muzzle flash
+    const flash = document.createElement("div");
+    flash.style.position = "absolute";
+    flash.style.top = "50%";
+    flash.style.left = "50%";
+    flash.style.width = "100px";
+    flash.style.height = "100px";
+    flash.style.backgroundColor = "rgba(255, 255, 0, 0.5)";
+    flash.style.borderRadius = "50%";
+    flash.style.transform = "translate(-50%, -50%)";
+    flash.style.pointerEvents = "none";
+    flash.style.zIndex = "100";
+    document.body.appendChild(flash);
+
+    // Remove muzzle flash after 100ms
+    setTimeout(() => {
+      document.body.removeChild(flash);
+    }, 100);
+
+    // Create bullet starting position (in front of camera)
+    const bulletStartPos = camera.position.clone();
+    const bulletDirection = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    bulletStartPos.addScaledVector(bulletDirection, 0.5); // Start slightly in front of camera
+    
+    // Create bullet target position (far in front of camera)
+    const bulletTargetPos = camera.position.clone();
+    bulletTargetPos.addScaledVector(bulletDirection, 100);
+    
+    // Create bullet geometry and material
+    const bulletGeometry = new THREE.SphereGeometry(0.1, 8, 8);
+    const bulletMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+    const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
+    
+    // Set initial position
+    bullet.position.copy(bulletStartPos);
+    
+    // Add properties to the bullet
+    bullet.userData = {
+      direction: bulletDirection,
+      speed: 20, // Units per second
+      damage: 20,
+      lifetime: 0,
+      maxLifetime: 3, // Seconds before bullet is removed
+      source: 'player'
+    };
+    
+    // Add bullet to scene and bullets array
+    scene.add(bullet);
+    bullets.push(bullet);
+    
+    // Create bullet trail for visual effect
+    createBulletTrail(bulletStartPos, bulletTargetPos);
+  }
+}
+
+// Example of how to use this in your click handler:
+document.addEventListener('click', function(event) {
+  if (!gameStarted || gameOver) return;
+  if (!controls.isLocked) {
+    controls.lock();
+    return;
+  }
+  handlePlayerShooting();
 });
