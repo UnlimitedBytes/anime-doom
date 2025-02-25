@@ -228,8 +228,64 @@ function createBackgroundMusic() {
   }
 }
 
+// Add these variables at the top of your file with other global variables
+let loadingManager;
+let loadingScreen;
+let loadingProgress = 0;
+let assetsLoaded = false;
+
+// Create loading screen
+function createLoadingScreen() {
+  loadingScreen = document.createElement('div');
+  loadingScreen.id = 'loadingScreen';
+  loadingScreen.innerHTML = `
+    <div class="loading-container">
+      <h1>ANIME DOOM</h1>
+      <div class="loading-bar-container">
+        <div class="loading-bar" id="loadingBar"></div>
+      </div>
+      <div class="loading-text">LOADING ASSETS <span id="loadingPercent">0%</span></div>
+      <div class="loading-animation">
+        <div class="loading-circle"></div>
+        <div class="loading-circle"></div>
+        <div class="loading-circle"></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(loadingScreen);
+}
+
+// Initialize loading manager
+function initLoadingManager() {
+  loadingManager = new THREE.LoadingManager();
+  
+  loadingManager.onProgress = function(url, itemsLoaded, itemsTotal) {
+    loadingProgress = Math.floor((itemsLoaded / itemsTotal) * 100);
+    document.getElementById('loadingBar').style.width = loadingProgress + '%';
+    document.getElementById('loadingPercent').textContent = loadingProgress + '%';
+  };
+  
+  loadingManager.onLoad = function() {
+    assetsLoaded = true;
+    
+    // Add a slight delay before hiding loading screen for dramatic effect
+    setTimeout(() => {
+      loadingScreen.classList.add('fade-out');
+      setTimeout(() => {
+        document.body.removeChild(loadingScreen);
+        // Show start screen after loading is complete
+        document.getElementById('startScreen').style.display = 'flex';
+      }, 1000);
+    }, 500);
+  };
+}
+
 // Initialize the game
 function init() {
+  // Create loading screen first
+  createLoadingScreen();
+  initLoadingManager();
+  
   // Create scene
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000000);
@@ -269,9 +325,6 @@ function init() {
   
   // Create audio visualization
   createAudioVisualization();
-  
-  // Set game start time
-  gameStartTime = performance.now();
   
   // Create lighting
   const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
@@ -316,22 +369,18 @@ function createMaze() {
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   ];
 
-  // Create wall material with texture
   const wallMaterial = new THREE.MeshStandardMaterial({
-    color: 0x8b4513,
-    roughness: 0.8,
+    color: 0x888888,
+    roughness: 0.7,
     metalness: 0.2,
-    side: THREE.DoubleSide,
   });
 
-  // Create floor material
   const floorMaterial = new THREE.MeshStandardMaterial({
     color: 0x444444,
-    roughness: 0.9,
+    roughness: 0.8,
     metalness: 0.1,
   });
 
-  // Create ceiling material
   const ceilingMaterial = new THREE.MeshStandardMaterial({
     color: 0x222222,
     roughness: 0.9,
@@ -373,9 +422,52 @@ function createMaze() {
     }
   }
 
-  // Set player starting position
-  camera.position.x = -mazeLayout[0].length + 3;
-  camera.position.z = -mazeLayout.length + 3;
+  // Find a safe spawn position (an empty cell)
+  let safeSpawnFound = false;
+  let spawnX = 0;
+  let spawnZ = 0;
+  
+  // Try to find the first empty cell (preferably near the edge)
+  for (let i = 1; i < mazeLayout.length - 1 && !safeSpawnFound; i++) {
+    for (let j = 1; j < mazeLayout[i].length - 1 && !safeSpawnFound; j++) {
+      if (mazeLayout[i][j] === 0) {
+        // Found an empty cell
+        spawnX = (j - mazeLayout[i].length / 2) * 2;
+        spawnZ = (i - mazeLayout.length / 2) * 2;
+        
+        // Check if this position is clear of walls
+        let isClear = true;
+        for (const wall of walls) {
+          const wallPos = wall.position.clone();
+          const distance = Math.sqrt(
+            Math.pow(wallPos.x - spawnX, 2) + 
+            Math.pow(wallPos.z - spawnZ, 2)
+          );
+          
+          if (distance < 1.5) {
+            isClear = false;
+            break;
+          }
+        }
+        
+        if (isClear) {
+          safeSpawnFound = true;
+        }
+      }
+    }
+  }
+  
+  // If we couldn't find a safe spawn, use a hardcoded position that should be safe
+  if (!safeSpawnFound) {
+    // Use the position of the second cell in the second row, which is typically empty
+    spawnX = (1 - mazeLayout[0].length / 2) * 2;
+    spawnZ = (1 - mazeLayout.length / 2) * 2;
+  }
+  
+  // Set player starting position to the safe spawn point
+  camera.position.x = spawnX;
+  camera.position.z = spawnZ;
+  camera.position.y = 1.6; // Eye height
 }
 
 // Create enemies
@@ -396,18 +488,44 @@ function createEnemies() {
   // Create enemy geometry and materials
   const enemyGeometry = new THREE.BoxGeometry(0.8, 1.8, 0.5);
 
-  // Create anime girl textures for each side of the box
-  const enemyMaterials = [
+  // Load anime girl textures with loading manager
+  const textureLoader = new THREE.TextureLoader(loadingManager);
+  const girl1Texture = textureLoader.load('girl-1.jpg');
+  const girl2Texture = textureLoader.load('girl-2.jpg');
+  const girl3Texture = textureLoader.load('girl-3.jpg');
+  const girl4Texture = textureLoader.load('girl-4.jpg');
+  
+  // Create anime girl materials for each side of the box
+  const createEnemyMaterials = (frontTexture) => [
     new THREE.MeshBasicMaterial({ color: 0xff9999 }), // right
     new THREE.MeshBasicMaterial({ color: 0xff9999 }), // left
     new THREE.MeshBasicMaterial({ color: 0xff9999 }), // top
     new THREE.MeshBasicMaterial({ color: 0xff9999 }), // bottom
-    new THREE.MeshBasicMaterial({ color: 0xffcccc }), // front - face
+    new THREE.MeshBasicMaterial({ map: frontTexture }), // front - face with texture
     new THREE.MeshBasicMaterial({ color: 0xff9999 }), // back
   ];
 
   // Create enemies
   for (let i = 0; i < enemyPositions.length; i++) {
+    // Cycle through all four textures
+    let texture;
+    switch (i % 4) {
+      case 0:
+        texture = girl1Texture;
+        break;
+      case 1:
+        texture = girl2Texture;
+        break;
+      case 2:
+        texture = girl3Texture;
+        break;
+      case 3:
+        texture = girl4Texture;
+        break;
+    }
+    
+    const enemyMaterials = createEnemyMaterials(texture);
+    
     const enemy = new THREE.Mesh(enemyGeometry, enemyMaterials);
     enemy.position.x = enemyPositions[i][0];
     enemy.position.z = enemyPositions[i][1];
@@ -432,6 +550,8 @@ function createEnemies() {
     enemy.userData.direction = new THREE.Vector3();
     enemy.userData.speed = 0.02 + Math.random() * 0.02; // Random speed
     enemy.userData.lastAttack = 0;
+    enemy.userData.pathfindCooldown = 0; // Add pathfinding cooldown
+    enemy.userData.currentPath = null; // Current pathfinding direction
 
     scene.add(enemy);
     enemies.push(enemy);
@@ -532,6 +652,8 @@ function onKeyUp(event) {
 
 // Handle click events
 function onClick(event) {
+  if (!assetsLoaded) return; // Ignore clicks if assets aren't loaded
+  
   if (!gameStarted) {
     // Start game
     document.getElementById("startScreen").style.display = "none";
@@ -748,8 +870,7 @@ function update(time) {
   camera.position.x = Math.max(-mapBounds, Math.min(mapBounds, camera.position.x));
   camera.position.z = Math.max(-mapBounds, Math.min(mapBounds, camera.position.z));
 
-  // Rest of the update function (enemies, pickups, etc.)
-  // Update enemies
+  // Update enemies with improved pathfinding
   for (let i = 0; i < enemies.length; i++) {
     const enemy = enemies[i];
 
@@ -762,63 +883,264 @@ function update(time) {
 
     // Store old position for collision detection
     const oldPosition = enemy.position.clone();
-
-    // Move enemy towards player
-    const newPosition = enemy.position.clone();
-    newPosition.x += directionToPlayer.x * enemy.userData.speed;
-    newPosition.z += directionToPlayer.z * enemy.userData.speed;
-
-    // Check for wall collisions before applying movement
-    let canMove = true;
-    const enemyRadius = 0.4; // Slightly smaller than player radius
-
-    for (const wall of walls) {
-      const wallBox = new THREE.Box3().setFromObject(wall);
+    
+    // Check if we need to update pathfinding
+    if (enemy.userData.pathfindCooldown <= 0 || !enemy.userData.currentPath) {
+      // Reset pathfinding cooldown (update path every 500ms)
+      enemy.userData.pathfindCooldown = 500;
       
-      // Check collision at enemy's height
-      const result = isColliding(newPosition, enemyRadius, wallBox);
-      if (result.collides) {
-        canMove = false;
-        break;
-      }
-    }
-
-    // Only move if no collision detected
-    if (canMove) {
-      enemy.position.copy(newPosition);
-    } else {
-      // Try to move along walls (basic pathfinding)
-      // Try X movement only
-      const tryX = oldPosition.clone();
-      tryX.x += directionToPlayer.x * enemy.userData.speed;
-      
-      let canMoveX = true;
-      for (const wall of walls) {
-        const wallBox = new THREE.Box3().setFromObject(wall);
-        if (isColliding(tryX, enemyRadius, wallBox).collides) {
-          canMoveX = false;
-          break;
+      // Check if enemy is stuck (not moving much over time)
+      if (enemy.userData.lastPosition) {
+        const movementDistance = enemy.position.distanceTo(enemy.userData.lastPosition);
+        if (movementDistance < 0.05) {
+          // Enemy might be stuck, reduce cooldown to find new path sooner
+          enemy.userData.pathfindCooldown = 100;
+          // Increase the chance of taking a random path when stuck
+          if (Math.random() < 0.7) {
+            const randomAngle = Math.random() * Math.PI * 2;
+            enemy.userData.currentPath = { 
+              x: Math.cos(randomAngle), 
+              z: Math.sin(randomAngle) 
+            };
+            // Skip the rest of pathfinding this cycle
+            enemy.userData.lastPosition = enemy.position.clone();
+            continue;
+          }
         }
       }
       
-      if (canMoveX) {
-        enemy.position.copy(tryX);
+      // Store current position for next comparison
+      enemy.userData.lastPosition = enemy.position.clone();
+      
+      // Perform raycasting to check if there's a clear path to player
+      const rayStart = enemy.position.clone();
+      rayStart.y = 1.0; // Adjust height to match walls
+      
+      const rayEnd = camera.position.clone();
+      rayEnd.y = 1.0;
+      
+      const rayDirection = new THREE.Vector3().subVectors(rayEnd, rayStart).normalize();
+      const raycaster = new THREE.Raycaster(rayStart, rayDirection);
+      const intersects = raycaster.intersectObjects(walls);
+      
+      // Check if there's a clear line of sight to player
+      const distanceToPlayer = enemy.position.distanceTo(camera.position);
+      const clearPath = intersects.length === 0 || 
+                        (intersects.length > 0 && intersects[0].distance > distanceToPlayer);
+      
+      if (clearPath) {
+        // Direct path is clear, use it
+        enemy.userData.currentPath = { x: directionToPlayer.x, z: directionToPlayer.z };
       } else {
-        // Try Z movement only
-        const tryZ = oldPosition.clone();
-        tryZ.z += directionToPlayer.z * enemy.userData.speed;
+        // No clear path, try to find a way around obstacles
         
-        let canMoveZ = true;
-        for (const wall of walls) {
-          const wallBox = new THREE.Box3().setFromObject(wall);
-          if (isColliding(tryZ, enemyRadius, wallBox).collides) {
-            canMoveZ = false;
+        // Generate 8 possible directions (cardinal + diagonal)
+        const possiblePaths = [
+          { x: 1, z: 0 },      // Right
+          { x: -1, z: 0 },     // Left
+          { x: 0, z: 1 },      // Forward
+          { x: 0, z: -1 },     // Back
+          { x: 0.7, z: 0.7 },  // Diagonal
+          { x: 0.7, z: -0.7 }, // Diagonal
+          { x: -0.7, z: 0.7 }, // Diagonal
+          { x: -0.7, z: -0.7 } // Diagonal
+        ];
+        
+        // Score each path based on:
+        // 1. How close it is to the direction to player
+        // 2. Whether it's clear of obstacles
+        // 3. Whether it leads away from walls
+        const scoredPaths = possiblePaths.map(path => {
+          // Clone path for modifications
+          const scoredPath = { ...path };
+          
+          // Base score is alignment with direction to player (dot product)
+          let score = path.x * directionToPlayer.x + path.z * directionToPlayer.z;
+          
+          // Test position if we move in this direction
+          const testPos = oldPosition.clone();
+          testPos.x += path.x * enemy.userData.speed * 10; // Look ahead
+          testPos.z += path.z * enemy.userData.speed * 10;
+          
+          // Check for wall collisions
+          let pathClear = true;
+          let minWallDistance = Infinity;
+          
+          for (const wall of walls) {
+            const wallBox = new THREE.Box3().setFromObject(wall);
+            const collisionResult = isColliding(testPos, 0.5, wallBox);
+            
+            if (collisionResult.collides) {
+              pathClear = false;
+              score -= 2; // Heavy penalty for paths that lead to collisions
+            } else {
+              // Calculate distance to this wall
+              const wallCenter = new THREE.Vector3();
+              wallBox.getCenter(wallCenter);
+              const distToWall = testPos.distanceTo(wallCenter) - 1; // Subtract wall half-width
+              
+              if (distToWall < minWallDistance) {
+                minWallDistance = distToWall;
+              }
+            }
+          }
+          
+          // Bonus for paths that are clear
+          if (pathClear) {
+            score += 0.5;
+          }
+          
+          // Bonus for paths that maintain distance from walls
+          if (minWallDistance < 2) {
+            // Closer walls get bigger penalties
+            score -= (2 - minWallDistance) * 0.5;
+          }
+          
+          // Store score
+          scoredPath.score = score;
+          return scoredPath;
+        });
+        
+        // Sort paths by score (highest first)
+        scoredPaths.sort((a, b) => b.score - a.score);
+        
+        // Choose the best path
+        if (scoredPaths.length > 0 && scoredPaths[0].score > -1.5) {
+          // Use the highest scoring path
+          enemy.userData.currentPath = { x: scoredPaths[0].x, z: scoredPaths[0].z };
+        } else {
+          // All paths are bad, try to move away from walls
+          let nearestWallNormal = null;
+          let nearestDistance = Infinity;
+          
+          for (const wall of walls) {
+            const wallBox = new THREE.Box3().setFromObject(wall);
+            const result = isColliding(enemy.position, 0.8, wallBox); // Use larger radius to detect nearby walls
+            
+            if (result.collides) {
+              const distance = result.penetration;
+              if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestWallNormal = result.normal;
+              }
+            }
+          }
+          
+          if (nearestWallNormal) {
+            // Move away from the nearest wall
+            enemy.userData.currentPath = { 
+              x: nearestWallNormal.x, 
+              z: nearestWallNormal.z 
+            };
+            // Shorter cooldown to recalculate path sooner
+            enemy.userData.pathfindCooldown = 200;
+          } else {
+            // Random movement as last resort
+            const randomAngle = Math.random() * Math.PI * 2;
+            enemy.userData.currentPath = { 
+              x: Math.cos(randomAngle), 
+              z: Math.sin(randomAngle) 
+            };
+            // Shorter cooldown for random movement
+            enemy.userData.pathfindCooldown = 300;
+          }
+        }
+      }
+    } else {
+      // Decrease pathfinding cooldown
+      enemy.userData.pathfindCooldown -= delta * 1000;
+    }
+    
+    // Move enemy along current path
+    if (enemy.userData.currentPath) {
+      // Calculate new position
+      const newPosition = enemy.position.clone();
+      newPosition.x += enemy.userData.currentPath.x * enemy.userData.speed;
+      newPosition.z += enemy.userData.currentPath.z * enemy.userData.speed;
+      
+      // Check for wall collisions at the new position
+      let canMove = true;
+      let collisionNormal = new THREE.Vector3();
+      
+      for (const wall of walls) {
+        const wallBox = new THREE.Box3().setFromObject(wall);
+        const result = isColliding(newPosition, 0.4, wallBox);
+        
+        if (result.collides) {
+          canMove = false;
+          collisionNormal.add(result.normal);
+          // Reset pathfinding immediately if we hit a wall
+          enemy.userData.pathfindCooldown = 0;
+        }
+      }
+      
+      if (canMove) {
+        // Apply movement if no collision
+        enemy.position.copy(newPosition);
+      } else if (collisionNormal.length() > 0) {
+        // If we have a collision, try sliding along the wall
+        collisionNormal.normalize();
+        
+        // Calculate slide direction (perpendicular to wall normal)
+        const slideDirection = new THREE.Vector3();
+        slideDirection.crossVectors(collisionNormal, new THREE.Vector3(0, 1, 0)).normalize();
+        
+        // Try both possible slide directions
+        const slideOptions = [
+          slideDirection.clone(),
+          slideDirection.clone().negate()
+        ];
+        
+        // Sort slide options by how close they are to the direction to player
+        slideOptions.sort((a, b) => {
+          const dotA = a.x * directionToPlayer.x + a.z * directionToPlayer.z;
+          const dotB = b.x * directionToPlayer.x + b.z * directionToPlayer.z;
+          return dotB - dotA;
+        });
+        
+        // Try sliding
+        let slidingWorked = false;
+        for (const slide of slideOptions) {
+          const slidePos = oldPosition.clone();
+          slidePos.x += slide.x * enemy.userData.speed;
+          slidePos.z += slide.z * enemy.userData.speed;
+          
+          let slideClear = true;
+          for (const wall of walls) {
+            const wallBox = new THREE.Box3().setFromObject(wall);
+            if (isColliding(slidePos, 0.4, wallBox).collides) {
+              slideClear = false;
+              break;
+            }
+          }
+          
+          if (slideClear) {
+            // Apply slide movement
+            enemy.position.copy(slidePos);
+            slidingWorked = true;
             break;
           }
         }
         
-        if (canMoveZ) {
-          enemy.position.copy(tryZ);
+        // If sliding didn't work, try moving directly away from the wall
+        if (!slidingWorked) {
+          const escapePos = oldPosition.clone();
+          escapePos.x += collisionNormal.x * enemy.userData.speed;
+          escapePos.z += collisionNormal.z * enemy.userData.speed;
+          
+          let escapeClear = true;
+          for (const wall of walls) {
+            const wallBox = new THREE.Box3().setFromObject(wall);
+            if (isColliding(escapePos, 0.4, wallBox).collides) {
+              escapeClear = false;
+              break;
+            }
+          }
+          
+          if (escapeClear) {
+            // Apply escape movement
+            enemy.position.copy(escapePos);
+          }
         }
       }
     }
@@ -947,10 +1269,15 @@ function animate() {
 // Start game when start button is clicked
 document.getElementById("startButton").addEventListener("click", function () {
   document.getElementById("startScreen").style.display = "none";
-  init();
+  // Don't call init() again since we already initialized
   controls.lock();
   gameStarted = true;
   gameStartTime = performance.now(); // Set game start time
+  
+  // Initialize audio context on user interaction to comply with browser policies
+  if (!audioContext) {
+    audioContext = createAudioContext();
+  }
   createBackgroundMusic();
 });
 
@@ -1074,3 +1401,10 @@ function updateGameTime() {
   
   document.getElementById('gameTime').textContent = `TIME: ${minutes}:${seconds}`;
 }
+
+// Hide start screen initially (it will be shown after loading)
+window.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('startScreen').style.display = 'none';
+  // Initialize the game on page load
+  init();
+});
