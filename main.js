@@ -6,6 +6,12 @@ let health = 100;
 let ammo = 30;
 let maxAmmo = 30;
 let isPaused = false;
+let fps = 0;
+let frameCount = 0;
+let lastFpsUpdate = 0;
+let enemiesKilled = 0;
+let gameTime = 0;
+let gameStartTime = 0;
 
 // Three.js variables
 let scene, camera, renderer;
@@ -27,11 +33,69 @@ let ceiling;
 let audioContext;
 let backgroundMusic;
 let bulletTime = 0;
+let analyser;
+let audioDataArray;
+let audioVisualization;
 
 // Audio synthesizer
 function createAudioContext() {
   audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  
+  // Create analyzer for audio visualization
+  analyser = audioContext.createAnalyser();
+  analyser.fftSize = 256;
+  const bufferLength = analyser.frequencyBinCount;
+  audioDataArray = new Uint8Array(bufferLength);
+  analyser.connect(audioContext.destination);
+  
   return audioContext;
+}
+
+// Create audio visualization
+function createAudioVisualization() {
+  audioVisualization = document.createElement('canvas');
+  audioVisualization.id = 'audioVisualization';
+  audioVisualization.width = 200;
+  audioVisualization.height = 100;
+  audioVisualization.style.position = 'absolute';
+  audioVisualization.style.top = '100px';
+  audioVisualization.style.right = '20px';
+  audioVisualization.style.zIndex = '100';
+  document.body.appendChild(audioVisualization);
+}
+
+// Update audio visualization
+function updateAudioVisualization() {
+  if (!analyser || !audioVisualization) return;
+  
+  const canvas = audioVisualization;
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  
+  // Get frequency data
+  analyser.getByteFrequencyData(audioDataArray);
+  
+  // Clear canvas
+  ctx.clearRect(0, 0, width, height);
+  
+  // Draw visualization
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+  ctx.fillRect(0, 0, width, height);
+  
+  const barWidth = width / audioDataArray.length;
+  let x = 0;
+  
+  for (let i = 0; i < audioDataArray.length; i++) {
+    const barHeight = audioDataArray[i] / 255 * height;
+    
+    // Use a gradient based on frequency
+    const hue = i / audioDataArray.length * 360;
+    ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
+    
+    ctx.fillRect(x, height - barHeight, barWidth, barHeight);
+    x += barWidth;
+  }
 }
 
 // Synthesize sound effects
@@ -48,7 +112,7 @@ function synthShoot() {
   gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
 
   oscillator.connect(gainNode);
-  gainNode.connect(ctx.destination);
+  gainNode.connect(analyser); // Connect to analyser instead of destination
 
   oscillator.start();
   oscillator.stop(ctx.currentTime + 0.2);
@@ -113,7 +177,12 @@ function synthDamage() {
 
 function createBackgroundMusic() {
   const ctx = audioContext || createAudioContext();
-
+  
+  // Connect to analyser for visualization
+  const masterGain = ctx.createGain();
+  masterGain.gain.value = 0.3; // Lower volume
+  masterGain.connect(analyser);
+  
   // Create a simple looping background track
   const playNote = (freq, time, duration) => {
     const osc = ctx.createOscillator();
@@ -126,7 +195,7 @@ function createBackgroundMusic() {
     gain.gain.exponentialRampToValueAtTime(0.01, time + duration - 0.1);
 
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(masterGain); // Connect to masterGain
 
     osc.start(time);
     osc.stop(time + duration);
@@ -178,11 +247,32 @@ function init() {
   // Create renderer
   renderer = new THREE.WebGLRenderer({
     canvas: document.getElementById("gameCanvas"),
-    antialias: true,
+    antialias: true
   });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
 
+  // Create controls
+  controls = new THREE.PointerLockControls(camera, document.body);
+
+  // Create raycaster
+  raycaster = new THREE.Raycaster();
+
+  // Add event listeners
+  document.addEventListener("keydown", onKeyDown, false);
+  document.addEventListener("keyup", onKeyUp, false);
+  document.addEventListener("click", onClick, false);
+  window.addEventListener("resize", onWindowResize, false);
+
+  // Create game info display
+  createGameInfo();
+  
+  // Create audio visualization
+  createAudioVisualization();
+  
+  // Set game start time
+  gameStartTime = performance.now();
+  
   // Create lighting
   const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
   scene.add(ambientLight);
@@ -192,12 +282,6 @@ function init() {
   directionalLight.castShadow = true;
   scene.add(directionalLight);
 
-  // Create controls
-  controls = new THREE.PointerLockControls(camera, document.body);
-
-  // Create raycaster for shooting
-  raycaster = new THREE.Raycaster();
-
   // Create maze
   createMaze();
 
@@ -206,12 +290,6 @@ function init() {
 
   // Create ammo pickups
   createAmmoPickups();
-
-  // Add event listeners
-  document.addEventListener("keydown", onKeyDown);
-  document.addEventListener("keyup", onKeyUp);
-  document.addEventListener("click", onClick);
-  window.addEventListener("resize", onWindowResize);
 
   // Start animation loop
   animate();
@@ -540,7 +618,9 @@ function onClick(event) {
         scene.remove(enemy);
         enemies.splice(enemies.indexOf(enemy), 1);
         score += 100;
+        enemiesKilled++; // Increment enemies killed counter
         document.getElementById("score").textContent = `SCORE: ${score}`;
+        document.getElementById("enemiesKilled").textContent = `ENEMIES KILLED: ${enemiesKilled}`;
       }
     }
   } else {
@@ -568,6 +648,15 @@ function update(time) {
   if (!gameStarted || gameOver || isPaused) return;
 
   const delta = (time - prevTime) / 1000;
+  
+  // Update FPS counter
+  updateFPS(time);
+  
+  // Update game time
+  updateGameTime();
+  
+  // Update audio visualization
+  updateAudioVisualization();
 
   // Store old position for collision response
   const oldPosition = camera.position.clone();
@@ -861,6 +950,7 @@ document.getElementById("startButton").addEventListener("click", function () {
   init();
   controls.lock();
   gameStarted = true;
+  gameStartTime = performance.now(); // Set game start time
   createBackgroundMusic();
 });
 
@@ -936,4 +1026,51 @@ function createBulletTrail(start, end) {
   setTimeout(() => {
     scene.remove(trail);
   }, 100);
+}
+
+// Create game info display
+function createGameInfo() {
+  const gameInfo = document.createElement('div');
+  gameInfo.id = 'gameInfo';
+  gameInfo.style.position = 'absolute';
+  gameInfo.style.top = '20px';
+  gameInfo.style.right = '20px';
+  gameInfo.style.color = '#ff0000';
+  gameInfo.style.fontSize = '16px';
+  gameInfo.style.textShadow = '2px 2px 4px #000';
+  gameInfo.style.zIndex = '100';
+  gameInfo.style.userSelect = 'none';
+  gameInfo.style.textAlign = 'right';
+  gameInfo.innerHTML = `
+    <div id="fps">FPS: 0</div>
+    <div id="enemiesKilled">ENEMIES KILLED: 0</div>
+    <div id="gameTime">TIME: 00:00</div>
+  `;
+  document.body.appendChild(gameInfo);
+}
+
+// Update FPS counter
+function updateFPS(time) {
+  frameCount++;
+  
+  // Update FPS every 500ms
+  if (time - lastFpsUpdate > 500) {
+    fps = Math.round((frameCount * 1000) / (time - lastFpsUpdate));
+    document.getElementById('fps').textContent = `FPS: ${fps}`;
+    frameCount = 0;
+    lastFpsUpdate = time;
+  }
+}
+
+// Update game time
+function updateGameTime() {
+  if (!gameStarted || gameOver || isPaused) return;
+  
+  const currentTime = performance.now();
+  gameTime = Math.floor((currentTime - gameStartTime) / 1000);
+  
+  const minutes = Math.floor(gameTime / 60).toString().padStart(2, '0');
+  const seconds = (gameTime % 60).toString().padStart(2, '0');
+  
+  document.getElementById('gameTime').textContent = `TIME: ${minutes}:${seconds}`;
 }
