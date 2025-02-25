@@ -1400,36 +1400,52 @@ document.getElementById("gameCanvas").addEventListener("click", function () {
   }
 });
 
-// Show start screen when controls are unlocked
+// Handle pause/resume functionality
 document.addEventListener("pointerlockchange", function () {
-  if (!controls) return;
+  if (!controls || !gameStarted || gameOver) return;
 
-  if (document.pointerLockElement !== document.body && gameStarted && !gameOver) {
-    // Game is paused
+  if (document.pointerLockElement !== document.body) {
+    // Game is paused - controls are unlocked
     isPaused = true;
-    const pauseScreen = document.createElement("div");
-    pauseScreen.id = "pauseScreen";
-    pauseScreen.style.position = "absolute";
-    pauseScreen.style.top = "0";
-    pauseScreen.style.left = "0";
-    pauseScreen.style.width = "100%";
-    pauseScreen.style.height = "100%";
-    pauseScreen.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
-    pauseScreen.style.color = "#ff0000";
-    pauseScreen.style.display = "flex";
-    pauseScreen.style.justifyContent = "center";
-    pauseScreen.style.alignItems = "center";
-    pauseScreen.style.fontSize = "48px";
-    pauseScreen.style.zIndex = "250";
-    pauseScreen.textContent = "PAUSED - CLICK TO RESUME";
-    document.body.appendChild(pauseScreen);
+    
+    // Create pause screen if it doesn't exist
+    if (!document.getElementById("pauseScreen")) {
+      const pauseScreen = document.createElement("div");
+      pauseScreen.id = "pauseScreen";
+      pauseScreen.style.position = "absolute";
+      pauseScreen.style.top = "0";
+      pauseScreen.style.left = "0";
+      pauseScreen.style.width = "100%";
+      pauseScreen.style.height = "100%";
+      pauseScreen.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
+      pauseScreen.style.color = "#ff0000";
+      pauseScreen.style.display = "flex";
+      pauseScreen.style.justifyContent = "center";
+      pauseScreen.style.alignItems = "center";
+      pauseScreen.style.fontSize = "48px";
+      pauseScreen.style.zIndex = "250";
+      pauseScreen.style.cursor = "pointer";
+      pauseScreen.textContent = "PAUSED - CLICK TO RESUME";
+      document.body.appendChild(pauseScreen);
+    }
   } else {
-    // Game is resumed
+    // Game is resumed - controls are locked
     isPaused = false;
+    
+    // Remove pause screen if it exists
     const pauseScreen = document.getElementById("pauseScreen");
     if (pauseScreen) {
       document.body.removeChild(pauseScreen);
     }
+  }
+});
+
+// Add a separate event listener for the pause screen
+document.addEventListener("click", function(event) {
+  const pauseScreen = document.getElementById("pauseScreen");
+  if (pauseScreen && event.target === pauseScreen) {
+    // Resume game when pause screen is clicked
+    controls.lock();
   }
 });
 

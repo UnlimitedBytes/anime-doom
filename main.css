@@ -82,6 +82,9 @@ body {
   width: 100%;
   height: 100%;
   background-color: #000;
+  background-image: url('background.jpg');
+  background-size: cover;
+  background-position: center;
   color: #ff0000;
   display: flex;
   flex-direction: column;
@@ -94,6 +97,8 @@ body {
   font-size: 48px;
   margin-bottom: 40px;
   text-shadow: 2px 2px 4px #600;
+  /* Add a text shadow to make the title more readable against the background */
+  text-shadow: 3px 3px 5px #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
 }
 
 #startButton {
@@ -104,6 +109,8 @@ body {
   cursor: pointer;
   font-family: "Courier New", monospace;
   font-size: 24px;
+  /* Add a subtle shadow to make the button stand out against the background */
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.7);
 }
 
 .flash {
