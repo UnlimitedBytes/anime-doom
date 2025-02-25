@@ -870,51 +870,156 @@ function update(time) {
   camera.position.x = Math.max(-mapBounds, Math.min(mapBounds, camera.position.x));
   camera.position.z = Math.max(-mapBounds, Math.min(mapBounds, camera.position.z));
 
-  // Update enemies with improved pathfinding
+  // Update enemies with completely redesigned pathfinding
   for (let i = 0; i < enemies.length; i++) {
     const enemy = enemies[i];
 
     // Make enemy look at player
     enemy.lookAt(camera.position);
 
-    // Calculate direction to player
-    const directionToPlayer = new THREE.Vector3();
-    directionToPlayer.subVectors(camera.position, enemy.position).normalize();
-
     // Store old position for collision detection
     const oldPosition = enemy.position.clone();
     
-    // Check if we need to update pathfinding
-    if (enemy.userData.pathfindCooldown <= 0 || !enemy.userData.currentPath) {
-      // Reset pathfinding cooldown (update path every 500ms)
-      enemy.userData.pathfindCooldown = 500;
-      
-      // Check if enemy is stuck (not moving much over time)
-      if (enemy.userData.lastPosition) {
-        const movementDistance = enemy.position.distanceTo(enemy.userData.lastPosition);
-        if (movementDistance < 0.05) {
-          // Enemy might be stuck, reduce cooldown to find new path sooner
-          enemy.userData.pathfindCooldown = 100;
-          // Increase the chance of taking a random path when stuck
-          if (Math.random() < 0.7) {
-            const randomAngle = Math.random() * Math.PI * 2;
-            enemy.userData.currentPath = { 
-              x: Math.cos(randomAngle), 
-              z: Math.sin(randomAngle) 
-            };
-            // Skip the rest of pathfinding this cycle
-            enemy.userData.lastPosition = enemy.position.clone();
-            continue;
-          }
-        }
+    // Track stuck state
+    if (!enemy.userData.stuckDetection) {
+      enemy.userData.stuckDetection = {
+        positions: [],
+        stuckTime: 0,
+        isStuck: false,
+        lastJumpTime: 0
+      };
+    }
+    
+    // Add position to history (keep last 10 positions)
+    const stuckDetection = enemy.userData.stuckDetection;
+    stuckDetection.positions.push(enemy.position.clone());
+    if (stuckDetection.positions.length > 10) {
+      stuckDetection.positions.shift();
+    }
+    
+    // Check if enemy is stuck by analyzing position history
+    if (stuckDetection.positions.length >= 5) {
+      let totalMovement = 0;
+      for (let j = 1; j < stuckDetection.positions.length; j++) {
+        totalMovement += stuckDetection.positions[j].distanceTo(stuckDetection.positions[j-1]);
       }
       
-      // Store current position for next comparison
-      enemy.userData.lastPosition = enemy.position.clone();
+      // If average movement is very small, consider the enemy stuck
+      const avgMovement = totalMovement / (stuckDetection.positions.length - 1);
+      if (avgMovement < 0.02) {
+        stuckDetection.stuckTime += delta;
+        if (stuckDetection.stuckTime > 1.0) { // Stuck for more than 1 second
+          stuckDetection.isStuck = true;
+        }
+      } else {
+        // Reset stuck timer if moving normally
+        stuckDetection.stuckTime = 0;
+        stuckDetection.isStuck = false;
+      }
+    }
+    
+    // Calculate direction to player
+    const directionToPlayer = new THREE.Vector3();
+    directionToPlayer.subVectors(camera.position, enemy.position).normalize();
+    
+    // Determine movement direction based on current state
+    let moveDirection = new THREE.Vector3();
+    
+    if (stuckDetection.isStuck) {
+      // STUCK BEHAVIOR: Try more aggressive escape strategies
       
-      // Perform raycasting to check if there's a clear path to player
+      // Try to "jump" to a better position
+      const now = time;
+      if (now - stuckDetection.lastJumpTime > 2000) { // Only jump every 2 seconds
+        stuckDetection.lastJumpTime = now;
+        
+        // Try several random positions around the current position
+        const jumpAttempts = 8;
+        const jumpRadius = 1.5;
+        let jumpSuccessful = false;
+        
+        for (let attempt = 0; attempt < jumpAttempts; attempt++) {
+          // Generate random angle and distance
+          const angle = Math.random() * Math.PI * 2;
+          const distance = 0.5 + Math.random() * jumpRadius;
+          
+          // Calculate jump position
+          const jumpPos = new THREE.Vector3(
+            enemy.position.x + Math.cos(angle) * distance,
+            enemy.position.y,
+            enemy.position.z + Math.sin(angle) * distance
+          );
+          
+          // Check if jump position is clear
+          let positionClear = true;
+          for (const wall of walls) {
+            const wallBox = new THREE.Box3().setFromObject(wall);
+            if (isColliding(jumpPos, 0.5, wallBox).collides) {
+              positionClear = false;
+              break;
+            }
+          }
+          
+          if (positionClear) {
+            // Teleport to new position
+            enemy.position.copy(jumpPos);
+            jumpSuccessful = true;
+            
+            // Reset stuck detection
+            stuckDetection.positions = [];
+            stuckDetection.stuckTime = 0;
+            stuckDetection.isStuck = false;
+            break;
+          }
+        }
+        
+        if (!jumpSuccessful) {
+          // If all jump attempts failed, try moving directly away from all walls
+          let escapeDirection = new THREE.Vector3();
+          
+          for (const wall of walls) {
+            const wallBox = new THREE.Box3().setFromObject(wall);
+            const wallCenter = new THREE.Vector3();
+            wallBox.getCenter(wallCenter);
+            
+            const toEnemy = new THREE.Vector3().subVectors(enemy.position, wallCenter);
+            const distance = toEnemy.length();
+            
+            // Weight by inverse square of distance
+            if (distance > 0) {
+              toEnemy.normalize().multiplyScalar(1 / (distance * distance));
+              escapeDirection.add(toEnemy);
+            }
+          }
+          
+          if (escapeDirection.length() > 0) {
+            escapeDirection.normalize();
+            moveDirection.copy(escapeDirection);
+          } else {
+            // Last resort: completely random direction
+            const randomAngle = Math.random() * Math.PI * 2;
+            moveDirection.set(
+              Math.cos(randomAngle),
+              0,
+              Math.sin(randomAngle)
+            );
+          }
+        }
+      } else {
+        // Between jumps, try random directions
+        const randomAngle = Math.random() * Math.PI * 2;
+        moveDirection.set(
+          Math.cos(randomAngle),
+          0,
+          Math.sin(randomAngle)
+        );
+      }
+    } else {
+      // NORMAL BEHAVIOR: Try to navigate toward player
+      
+      // Check if there's a clear path to player using raycasting
       const rayStart = enemy.position.clone();
-      rayStart.y = 1.0; // Adjust height to match walls
+      rayStart.y = 1.0;
       
       const rayEnd = camera.position.clone();
       rayEnd.y = 1.0;
@@ -923,225 +1028,122 @@ function update(time) {
       const raycaster = new THREE.Raycaster(rayStart, rayDirection);
       const intersects = raycaster.intersectObjects(walls);
       
-      // Check if there's a clear line of sight to player
       const distanceToPlayer = enemy.position.distanceTo(camera.position);
       const clearPath = intersects.length === 0 || 
                         (intersects.length > 0 && intersects[0].distance > distanceToPlayer);
       
       if (clearPath) {
-        // Direct path is clear, use it
-        enemy.userData.currentPath = { x: directionToPlayer.x, z: directionToPlayer.z };
+        // Direct path to player is clear
+        moveDirection.copy(directionToPlayer);
       } else {
-        // No clear path, try to find a way around obstacles
+        // No clear path, use potential field navigation
         
-        // Generate 8 possible directions (cardinal + diagonal)
-        const possiblePaths = [
-          { x: 1, z: 0 },      // Right
-          { x: -1, z: 0 },     // Left
-          { x: 0, z: 1 },      // Forward
-          { x: 0, z: -1 },     // Back
-          { x: 0.7, z: 0.7 },  // Diagonal
-          { x: 0.7, z: -0.7 }, // Diagonal
-          { x: -0.7, z: 0.7 }, // Diagonal
-          { x: -0.7, z: -0.7 } // Diagonal
-        ];
+        // Attraction to player (goal-seeking behavior)
+        moveDirection.copy(directionToPlayer);
         
-        // Score each path based on:
-        // 1. How close it is to the direction to player
-        // 2. Whether it's clear of obstacles
-        // 3. Whether it leads away from walls
-        const scoredPaths = possiblePaths.map(path => {
-          // Clone path for modifications
-          const scoredPath = { ...path };
-          
-          // Base score is alignment with direction to player (dot product)
-          let score = path.x * directionToPlayer.x + path.z * directionToPlayer.z;
-          
-          // Test position if we move in this direction
-          const testPos = oldPosition.clone();
-          testPos.x += path.x * enemy.userData.speed * 10; // Look ahead
-          testPos.z += path.z * enemy.userData.speed * 10;
-          
-          // Check for wall collisions
-          let pathClear = true;
-          let minWallDistance = Infinity;
-          
-          for (const wall of walls) {
-            const wallBox = new THREE.Box3().setFromObject(wall);
-            const collisionResult = isColliding(testPos, 0.5, wallBox);
-            
-            if (collisionResult.collides) {
-              pathClear = false;
-              score -= 2; // Heavy penalty for paths that lead to collisions
-            } else {
-              // Calculate distance to this wall
-              const wallCenter = new THREE.Vector3();
-              wallBox.getCenter(wallCenter);
-              const distToWall = testPos.distanceTo(wallCenter) - 1; // Subtract wall half-width
-              
-              if (distToWall < minWallDistance) {
-                minWallDistance = distToWall;
-              }
-            }
-          }
-          
-          // Bonus for paths that are clear
-          if (pathClear) {
-            score += 0.5;
-          }
-          
-          // Bonus for paths that maintain distance from walls
-          if (minWallDistance < 2) {
-            // Closer walls get bigger penalties
-            score -= (2 - minWallDistance) * 0.5;
-          }
-          
-          // Store score
-          scoredPath.score = score;
-          return scoredPath;
-        });
+        // Repulsion from walls (obstacle avoidance)
+        const wallRepulsion = new THREE.Vector3();
         
-        // Sort paths by score (highest first)
-        scoredPaths.sort((a, b) => b.score - a.score);
-        
-        // Choose the best path
-        if (scoredPaths.length > 0 && scoredPaths[0].score > -1.5) {
-          // Use the highest scoring path
-          enemy.userData.currentPath = { x: scoredPaths[0].x, z: scoredPaths[0].z };
-        } else {
-          // All paths are bad, try to move away from walls
-          let nearestWallNormal = null;
-          let nearestDistance = Infinity;
+        for (const wall of walls) {
+          const wallBox = new THREE.Box3().setFromObject(wall);
+          const wallCenter = new THREE.Vector3();
+          wallBox.getCenter(wallCenter);
           
-          for (const wall of walls) {
-            const wallBox = new THREE.Box3().setFromObject(wall);
-            const result = isColliding(enemy.position, 0.8, wallBox); // Use larger radius to detect nearby walls
-            
-            if (result.collides) {
-              const distance = result.penetration;
-              if (distance < nearestDistance) {
-                nearestDistance = distance;
-                nearestWallNormal = result.normal;
-              }
-            }
-          }
+          const toEnemy = new THREE.Vector3().subVectors(enemy.position, wallCenter);
+          const distance = toEnemy.length();
           
-          if (nearestWallNormal) {
-            // Move away from the nearest wall
-            enemy.userData.currentPath = { 
-              x: nearestWallNormal.x, 
-              z: nearestWallNormal.z 
-            };
-            // Shorter cooldown to recalculate path sooner
-            enemy.userData.pathfindCooldown = 200;
-          } else {
-            // Random movement as last resort
-            const randomAngle = Math.random() * Math.PI * 2;
-            enemy.userData.currentPath = { 
-              x: Math.cos(randomAngle), 
-              z: Math.sin(randomAngle) 
-            };
-            // Shorter cooldown for random movement
-            enemy.userData.pathfindCooldown = 300;
+          // Only consider walls within influence radius
+          const influenceRadius = 4.0;
+          if (distance < influenceRadius) {
+            // Stronger repulsion for closer walls
+            const repulsionStrength = 1.0 - (distance / influenceRadius);
+            toEnemy.normalize().multiplyScalar(repulsionStrength * 2.0);
+            wallRepulsion.add(toEnemy);
           }
         }
+        
+        // Combine attraction and repulsion forces
+        moveDirection.add(wallRepulsion);
+        
+        // Normalize the result
+        if (moveDirection.length() > 0) {
+          moveDirection.normalize();
+        } else {
+          // Fallback to direct path if forces cancel out
+          moveDirection.copy(directionToPlayer);
+        }
       }
-    } else {
-      // Decrease pathfinding cooldown
-      enemy.userData.pathfindCooldown -= delta * 1000;
     }
     
-    // Move enemy along current path
-    if (enemy.userData.currentPath) {
-      // Calculate new position
-      const newPosition = enemy.position.clone();
-      newPosition.x += enemy.userData.currentPath.x * enemy.userData.speed;
-      newPosition.z += enemy.userData.currentPath.z * enemy.userData.speed;
-      
-      // Check for wall collisions at the new position
-      let canMove = true;
-      let collisionNormal = new THREE.Vector3();
-      
-      for (const wall of walls) {
-        const wallBox = new THREE.Box3().setFromObject(wall);
-        const result = isColliding(newPosition, 0.4, wallBox);
-        
-        if (result.collides) {
-          canMove = false;
-          collisionNormal.add(result.normal);
-          // Reset pathfinding immediately if we hit a wall
-          enemy.userData.pathfindCooldown = 0;
-        }
+    // Apply movement with speed
+    const newPosition = enemy.position.clone();
+    newPosition.x += moveDirection.x * enemy.userData.speed;
+    newPosition.z += moveDirection.z * enemy.userData.speed;
+    
+    // Check for wall collisions at the new position
+    let canMove = true;
+    
+    for (const wall of walls) {
+      const wallBox = new THREE.Box3().setFromObject(wall);
+      if (isColliding(newPosition, 0.4, wallBox).collides) {
+        canMove = false;
+        break;
       }
+    }
+    
+    if (canMove) {
+      // Apply movement if no collision
+      enemy.position.copy(newPosition);
+    } else {
+      // Collision detected, try sliding along walls
       
-      if (canMove) {
-        // Apply movement if no collision
-        enemy.position.copy(newPosition);
-      } else if (collisionNormal.length() > 0) {
-        // If we have a collision, try sliding along the wall
-        collisionNormal.normalize();
+      // Try 8 directions around the unit circle
+      const slideAngles = [0, Math.PI/4, Math.PI/2, 3*Math.PI/4, Math.PI, 5*Math.PI/4, 3*Math.PI/2, 7*Math.PI/4];
+      let slidingWorked = false;
+      
+      // Sort angles by how close they are to the desired direction
+      const sortedAngles = slideAngles.slice().sort((a, b) => {
+        const dirA = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+        const dirB = new THREE.Vector3(Math.cos(b), 0, Math.sin(b));
         
-        // Calculate slide direction (perpendicular to wall normal)
-        const slideDirection = new THREE.Vector3();
-        slideDirection.crossVectors(collisionNormal, new THREE.Vector3(0, 1, 0)).normalize();
+        const dotA = dirA.dot(moveDirection);
+        const dotB = dirB.dot(moveDirection);
         
-        // Try both possible slide directions
-        const slideOptions = [
-          slideDirection.clone(),
-          slideDirection.clone().negate()
-        ];
+        return dotB - dotA; // Higher dot product first (more aligned)
+      });
+      
+      // Try each direction
+      for (const angle of sortedAngles) {
+        const slideDir = new THREE.Vector3(
+          Math.cos(angle),
+          0,
+          Math.sin(angle)
+        );
         
-        // Sort slide options by how close they are to the direction to player
-        slideOptions.sort((a, b) => {
-          const dotA = a.x * directionToPlayer.x + a.z * directionToPlayer.z;
-          const dotB = b.x * directionToPlayer.x + b.z * directionToPlayer.z;
-          return dotB - dotA;
-        });
+        const slidePos = oldPosition.clone();
+        slidePos.x += slideDir.x * enemy.userData.speed;
+        slidePos.z += slideDir.z * enemy.userData.speed;
         
-        // Try sliding
-        let slidingWorked = false;
-        for (const slide of slideOptions) {
-          const slidePos = oldPosition.clone();
-          slidePos.x += slide.x * enemy.userData.speed;
-          slidePos.z += slide.z * enemy.userData.speed;
-          
-          let slideClear = true;
-          for (const wall of walls) {
-            const wallBox = new THREE.Box3().setFromObject(wall);
-            if (isColliding(slidePos, 0.4, wallBox).collides) {
-              slideClear = false;
-              break;
-            }
-          }
-          
-          if (slideClear) {
-            // Apply slide movement
-            enemy.position.copy(slidePos);
-            slidingWorked = true;
+        let slideClear = true;
+        for (const wall of walls) {
+          const wallBox = new THREE.Box3().setFromObject(wall);
+          if (isColliding(slidePos, 0.4, wallBox).collides) {
+            slideClear = false;
             break;
           }
         }
         
-        // If sliding didn't work, try moving directly away from the wall
-        if (!slidingWorked) {
-          const escapePos = oldPosition.clone();
-          escapePos.x += collisionNormal.x * enemy.userData.speed;
-          escapePos.z += collisionNormal.z * enemy.userData.speed;
-          
-          let escapeClear = true;
-          for (const wall of walls) {
-            const wallBox = new THREE.Box3().setFromObject(wall);
-            if (isColliding(escapePos, 0.4, wallBox).collides) {
-              escapeClear = false;
-              break;
-            }
-          }
-          
-          if (escapeClear) {
-            // Apply escape movement
-            enemy.position.copy(escapePos);
-          }
+        if (slideClear) {
+          // Apply slide movement
+          enemy.position.copy(slidePos);
+          slidingWorked = true;
+          break;
         }
+      }
+      
+      // If no sliding direction worked, stay in place
+      if (!slidingWorked) {
+        // Don't move this frame
       }
     }
 
